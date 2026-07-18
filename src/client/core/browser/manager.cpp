@@ -1117,6 +1117,7 @@ void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
         }
 
         network_.SendBrowserCreateResult(id, true, static_cast<int>(BrowserCreateStatus::Success), "Successfully created");
+        EmitKeyboardLayoutLocale(id);
     }
 }
 
@@ -1757,6 +1758,72 @@ void BrowserManager::EmitCustomPlayerListVisibility()
 
         frame->SendProcessMessage(PID_RENDERER, msg);
     }
+}
+
+void BrowserManager::SetKeyboardLayoutLocale(const std::string& locale)
+{
+    if (locale.empty())
+        return;
+
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(
+            TID_UI,
+            base::BindOnce(
+                &BrowserManager::SetKeyboardLayoutLocale,
+                base::Unretained(this),
+                locale));
+        return;
+    }
+
+    if (keyboard_layout_locale_ == locale)
+        return;
+
+    keyboard_layout_locale_ = locale;
+    LOG_DEBUG("[CEF] Active keyboard layout changed to '{}'.", keyboard_layout_locale_);
+    EmitKeyboardLayoutLocale();
+}
+
+void BrowserManager::EmitKeyboardLayoutLocale(int browserId)
+{
+    if (keyboard_layout_locale_.empty())
+        return;
+
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(
+            TID_UI,
+            base::BindOnce(
+                &BrowserManager::EmitKeyboardLayoutLocale,
+                base::Unretained(this),
+                browserId));
+        return;
+    }
+
+    const auto emit_to_browser = [this](const BrowserInstance* instance)
+    {
+        if (!instance || !instance->browser || !instance->browser->IsValid())
+            return;
+
+        CefRefPtr<CefFrame> frame = instance->browser->GetMainFrame();
+        if (!frame || !frame->IsValid())
+            return;
+
+        CefRefPtr<CefProcessMessage> message = CefProcessMessage::Create("emit_event");
+        CefRefPtr<CefListValue> arguments = message->GetArgumentList();
+        arguments->SetString(0, "cef:keyboard_layout");
+        arguments->SetString(1, keyboard_layout_locale_);
+        frame->SendProcessMessage(PID_RENDERER, message);
+    };
+
+    if (browserId >= 0)
+    {
+        emit_to_browser(GetBrowserInstance(browserId));
+        return;
+    }
+
+    for (const auto& [id, instance] : browsers_)
+        emit_to_browser(instance.get());
 }
 
 void BrowserManager::SetPlayerListMode(PlayerListMode mode)

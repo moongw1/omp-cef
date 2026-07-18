@@ -4,6 +4,7 @@
 #include <bitset>
 #include <functional>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -152,6 +153,7 @@ public:
     void TickGameData();
     void OnGameFocusGained();
     void OnGameFocusLost();
+    void SetKeyboardLayoutLocale(const std::string& locale);
 
     void ExitGame();
 
@@ -210,6 +212,7 @@ private:
     void DispatchNativeUiEvents();
     void EmitCustomEscapeMenuVisibility();
     void EmitCustomPlayerListVisibility();
+    void EmitKeyboardLayoutLocale(int browserId = -1);
 
     CEntity* GetEntityFromObjectId(int objectId);
     void ClearPendingPaint(int id);
@@ -250,6 +253,9 @@ private:
     std::bitset<256> key_allowed_{};
 
     std::unordered_map<int, PlayerStatsPollState> player_stats_poll_;
+
+    // BCP 47 locale for the active Windows input layout, e.g. ar-EG or en-US.
+    std::string keyboard_layout_locale_;
 
     // Native GTA SA ESC/pause menu handling
     EscapeMenuController escape_menu_;

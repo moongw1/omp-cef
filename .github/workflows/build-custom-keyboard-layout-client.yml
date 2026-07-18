@@ -1,0 +1,13 @@
+name: Build Custom Keyboard Layout Client
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-client:
+    uses: ./.github/workflows/build-client-reusable.yml
+    with:
+      version: keyboard-layout
+      cef-version: 148.0.10+g7ee53f5+chromium-148.0.7778.218
+      cef-arch: windows32
+      build-type: Release

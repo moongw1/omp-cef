@@ -25,6 +25,34 @@
 #include "system/resource_manager.hpp"
 #include "ui/hud_manager.hpp"
 #include "ui/download_dialog.hpp"
+#include "utf8.hpp"
+
+namespace
+{
+    std::string GetKeyboardLocaleName(HKL keyboard_layout)
+    {
+        if (!keyboard_layout)
+            keyboard_layout = ::GetKeyboardLayout(0);
+
+        const LANGID language_id = LOWORD(HandleToUlong(keyboard_layout));
+        wchar_t locale_name[LOCALE_NAME_MAX_LENGTH]{};
+
+        if (::LCIDToLocaleName(
+                MAKELCID(language_id, SORT_DEFAULT),
+                locale_name,
+                LOCALE_NAME_MAX_LENGTH,
+                0) == 0)
+        {
+            return {};
+        }
+
+        std::string utf8_locale;
+        if (!ConvertWideToMultiByte(CP_UTF8, 0, std::wstring(locale_name), utf8_locale))
+            return {};
+
+        return utf8_locale;
+    }
+}
 
 std::unique_ptr<Runtime> Runtime::CreateDefault()
 {
@@ -254,6 +282,18 @@ void Runtime::FinalizeInitialization(HWND hwnd)
             if (browser_ && browser_->OnWndProcMessage(h, msg, wParam, lParam))
                 return { TRUE };
 
+            if (msg == WM_INPUTLANGCHANGE)
+            {
+                const auto keyboard_layout = reinterpret_cast<HKL>(lParam);
+                const std::string locale = GetKeyboardLocaleName(keyboard_layout);
+
+                if (browser_ && !locale.empty())
+                    browser_->SetKeyboardLayoutLocale(locale);
+
+                // Let the original window procedure propagate the message.
+                return std::nullopt;
+            }
+
             if (msg == WM_ACTIVATE)
             {
                 const bool active = (LOWORD(wParam) != WA_INACTIVE);
@@ -307,6 +347,14 @@ void Runtime::FinalizeInitialization(HWND hwnd)
         };
 
         LOG_INFO("[Runtime] WndProc hook installed successfully.");
+
+        // Publish the layout that was already active before the hook was installed.
+        if (browser_)
+        {
+            const std::string locale = GetKeyboardLocaleName(::GetKeyboardLayout(0));
+            if (!locale.empty())
+                browser_->SetKeyboardLayoutLocale(locale);
+        }
     }
 
     RenderManager::Instance().SetGameWindow(hwnd);
