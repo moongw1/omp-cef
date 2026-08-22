@@ -296,9 +296,21 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
                     if (browser_)
                         browser_->OnGameFocusLost();
+
+                    // GTA SA/D3D9 can remain as a black fullscreen surface after
+                    // Alt+Tab instead of yielding the desktop. Explicitly minimize
+                    // the game window when the process loses activation so Windows
+                    // can show the newly focused application immediately.
+                    if (::IsWindow(h) && !::IsIconic(h))
+                        ::ShowWindow(h, SW_MINIMIZE);
                 }
                 else
                 {
+                    // If Windows activates the app while it is still iconic,
+                    // restore it before resynchronizing CEF/cursor state.
+                    if (::IsWindow(h) && ::IsIconic(h))
+                        ::ShowWindow(h, SW_RESTORE);
+
                     CursorHook::Instance().OnGameActivated();
 
                     if (browser_)
