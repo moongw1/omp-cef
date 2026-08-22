@@ -28,6 +28,9 @@ private:
     using FnCloseChatInput = void(__fastcall*)(void* pThis, void* _edx);
     static void __fastcall Hook_CloseChatInput(void* pThis, void* _edx);
 
+    using FnDrawChat = void(__fastcall*)(void* pThis, void* _edx);
+    static void __fastcall Hook_DrawChat(void* pThis, void* _edx);
+
     void SetChatInputState(bool open);
 
 private:
@@ -39,4 +42,5 @@ private:
     static inline ChatHook* s_self_ = nullptr;
     static inline FnOpenChatInput s_orig_open_ = nullptr;
     static inline FnCloseChatInput s_orig_close_ = nullptr;
+    static inline FnDrawChat s_orig_draw_ = nullptr;
 };
