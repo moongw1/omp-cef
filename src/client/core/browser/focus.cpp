@@ -15,6 +15,18 @@ void FocusManager::Update()
     const bool entered_cef_focus = is_cef_focused_now && !was_cef_focused_last_frame_;
     const bool left_cef_focus = !is_cef_focused_now && was_cef_focused_last_frame_;
 
+    if (!game_active_.load(std::memory_order_acquire))
+    {
+        // Do not let the CEF cursor hook fight Windows while the user is
+        // Alt-Tabbed into another application.  Keeping a forced cursor or a
+        // clipped cursor here can leave GTA/CEF behaving like an active
+        // fullscreen window and can present a stale black surface.
+        CursorHook::Instance().ClearForcedCursor();
+        ::ClipCursor(nullptr);
+        was_cef_focused_last_frame_ = is_cef_focused_now;
+        return;
+    }
+
     if (is_cef_focused_now)
     {
         game->SetCursorMode(CMODE_LOCKCAMANDCONTROL, FALSE);
@@ -24,16 +36,16 @@ void FocusManager::Update()
         HCURSOR hCursor = nullptr;
         switch (type) {
             case CT_POINTER:
-                hCursor = LoadCursor(nullptr, IDC_ARROW); 
+                hCursor = LoadCursor(nullptr, IDC_ARROW);
                 break;
             case CT_IBEAM:
-                hCursor = LoadCursor(nullptr, IDC_IBEAM); 
+                hCursor = LoadCursor(nullptr, IDC_IBEAM);
                 break;
             case CT_HAND:
-                hCursor = LoadCursor(nullptr, IDC_HAND);  
+                hCursor = LoadCursor(nullptr, IDC_HAND);
                 break;
             default:
-                hCursor = LoadCursor(nullptr, IDC_ARROW); 
+                hCursor = LoadCursor(nullptr, IDC_ARROW);
                 break;
         }
 
@@ -46,9 +58,9 @@ void FocusManager::Update()
             while (::ShowCursor(TRUE) < 0) {}
         }
     }
-    else 
+    else
     {
-        if (left_cef_focus || force_resync) 
+        if (left_cef_focus || force_resync)
         {
             CursorHook::Instance().SetForced(false);
 
@@ -63,13 +75,31 @@ void FocusManager::Update()
     was_cef_focused_last_frame_ = is_cef_focused_now;
 }
 
+void FocusManager::SetGameActive(bool active)
+{
+    const bool previous = game_active_.exchange(active, std::memory_order_acq_rel);
+    if (previous == active)
+        return;
+
+    if (!active)
+    {
+        CursorHook::Instance().ClearForcedCursor();
+        ::ClipCursor(nullptr);
+        return;
+    }
+
+    // Reapply the correct CEF/game cursor state on the next update after
+    // Windows has finished activating the GTA window.
+    RequestResync();
+}
+
 void FocusManager::SetInputFocus(int browserId, bool has_focus)
 {
-    if (has_focus) { 
-        input_focused_browser_id_.store(browserId); 
+    if (has_focus) {
+        input_focused_browser_id_.store(browserId);
     }
     else {
-        int expected_id = browserId; 
+        int expected_id = browserId;
         input_focused_browser_id_.compare_exchange_strong(expected_id, -1);
     }
 }
@@ -80,13 +110,13 @@ bool FocusManager::ShouldBlockChat() const
         return true;
 
     const int focused_id = input_focused_browser_id_.load();
-    if (focused_id == -1) 
+    if (focused_id == -1)
         return false;
 
     // Block chat if focused browser is configured to control chat input
     auto* instance = const_cast<BrowserManager&>(manager_).GetBrowserInstance(focused_id);
-    if (instance) { 
-        return instance->controls_chat_input; 
+    if (instance) {
+        return instance->controls_chat_input;
     }
 
     return false;
