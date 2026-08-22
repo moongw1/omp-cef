@@ -20,24 +20,30 @@ bool ChatHook::Initialize()
 
     void* addrOpenChat = nullptr;
     void* addrCloseChat = nullptr;
+    void* addrDrawChat = nullptr;
 
     switch (addrs.Version())
     {
         case SampVersion::V037:
             addrOpenChat = reinterpret_cast<void*>(base + 0x657E0);
             addrCloseChat = reinterpret_cast<void*>(base + 0x658E0);
+            addrDrawChat = reinterpret_cast<void*>(base + 0x64230);
             break;
         case SampVersion::V037R3:
             addrOpenChat = reinterpret_cast<void*>(base + 0x68D10);
             addrCloseChat = reinterpret_cast<void*>(base + 0x68E10);
+            addrDrawChat = reinterpret_cast<void*>(base + 0x67680);
             break;
         case SampVersion::V037R5:
             addrOpenChat = reinterpret_cast<void*>(base + 0x69480);
             addrCloseChat = reinterpret_cast<void*>(base + 0x69580);
+            addrDrawChat = reinterpret_cast<void*>(base + 0x67E00);
             break;
         case SampVersion::V03DLR1:
             addrOpenChat = reinterpret_cast<void*>(base + 0x68EC0);
             addrCloseChat = reinterpret_cast<void*>(base + 0x68FC0);
+            // Native chat Draw offset for 0.3.DL-R1 is intentionally not guessed.
+            // Keep chat input hooks working and skip visual suppression on this build.
             break;
         default:
             break;
@@ -58,23 +64,44 @@ bool ChatHook::Initialize()
     if (!hooks_.Install("ChatHook::CloseChatInput", addrCloseChat, reinterpret_cast<void*>(&Hook_CloseChatInput)))
     {
         LOG_ERROR("[ChatHook] Failed to install CloseChatInput hook.");
+        hooks_.Uninstall("ChatHook::OpenChatInput");
         return false;
     }
 
     s_orig_open_ = reinterpret_cast<FnOpenChatInput>(hooks_.GetOriginal("ChatHook::OpenChatInput"));
     if (!s_orig_open_)
     {
-        LOG_FATAL("[ChatHook] Failed to get original function pointer.");
+        LOG_FATAL("[ChatHook] Failed to get original OpenChatInput function pointer.");
+        hooks_.Uninstall("ChatHook::CloseChatInput");
         hooks_.Uninstall("ChatHook::OpenChatInput");
         return false;
     }
 
-    s_orig_close_ = (FnCloseChatInput)hooks_.GetOriginal("ChatHook::CloseChatInput");
+    s_orig_close_ = reinterpret_cast<FnCloseChatInput>(hooks_.GetOriginal("ChatHook::CloseChatInput"));
     if (!s_orig_close_)
     {
-        LOG_FATAL("[ChatHook] Failed to get original function pointer.");
+        LOG_FATAL("[ChatHook] Failed to get original CloseChatInput function pointer.");
         hooks_.Uninstall("ChatHook::CloseChatInput");
+        hooks_.Uninstall("ChatHook::OpenChatInput");
+        s_orig_open_ = nullptr;
         return false;
+    }
+
+    if (addrDrawChat)
+    {
+        if (!hooks_.Install("ChatHook::DrawChat", addrDrawChat, reinterpret_cast<void*>(&Hook_DrawChat)))
+        {
+            LOG_ERROR("[ChatHook] Failed to install native chat Draw hook; original chat may remain visible.");
+        }
+        else
+        {
+            s_orig_draw_ = reinterpret_cast<FnDrawChat>(hooks_.GetOriginal("ChatHook::DrawChat"));
+            LOG_INFO("[ChatHook] Native SA:MP chat rendering disabled.");
+        }
+    }
+    else
+    {
+        LOG_WARN("[ChatHook] Native chat render suppression is unavailable for this SA:MP version.");
     }
 
     LOG_DEBUG("[ChatHook] OpenChatInput hook installed.");
@@ -84,8 +111,10 @@ bool ChatHook::Initialize()
 
 void ChatHook::Shutdown()
 {
+    hooks_.Uninstall("ChatHook::DrawChat");
     hooks_.Uninstall("ChatHook::OpenChatInput");
     hooks_.Uninstall("ChatHook::CloseChatInput");
+    s_orig_draw_ = nullptr;
     s_orig_open_ = nullptr;
     s_orig_close_ = nullptr;
     s_self_ = nullptr;
@@ -147,4 +176,10 @@ void __fastcall ChatHook::Hook_CloseChatInput(void* pThis, void* _edx)
         s_orig_close_(pThis, _edx);
 
     self->SetChatInputState(false);
+}
+
+void __fastcall ChatHook::Hook_DrawChat(void* /*pThis*/, void* /*_edx*/)
+{
+    // Intentionally do nothing.
+    // Messages continue to be stored by SA:MP, but its native chat UI is never drawn.
 }
