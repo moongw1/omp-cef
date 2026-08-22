@@ -279,6 +279,38 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         wndproc_->OnMessage = [this](HWND h, UINT msg, WPARAM wParam, LPARAM lParam) -> std::optional<LRESULT>
         {
+            // Activation state must be handled before CEF input dispatch so the
+            // cursor hook is released as soon as Windows switches to another app.
+            if (msg == WM_ACTIVATEAPP)
+            {
+                const bool active = (wParam != FALSE);
+
+                if (focus_)
+                    focus_->SetGameActive(active);
+
+                if (!active)
+                {
+                    cursor_recenter_frames_.store(0, std::memory_order_release);
+                    CursorHook::Instance().ClearForcedCursor();
+                    ::ClipCursor(nullptr);
+
+                    if (browser_)
+                        browser_->OnGameFocusLost();
+                }
+                else
+                {
+                    CursorHook::Instance().OnGameActivated();
+
+                    if (browser_)
+                        browser_->OnGameFocusGained();
+
+                    cursor_recenter_frames_.store(5, std::memory_order_release);
+                }
+
+                UpdateBrowserDrawState();
+                return std::nullopt;
+            }
+
             if (browser_ && browser_->OnWndProcMessage(h, msg, wParam, lParam))
                 return { TRUE };
 
@@ -298,6 +330,9 @@ void Runtime::FinalizeInitialization(HWND hwnd)
             {
                 const bool active = (LOWORD(wParam) != WA_INACTIVE);
 
+                if (focus_)
+                    focus_->SetGameActive(active);
+
                 UpdateBrowserDrawState();
 
                 if (active)
@@ -315,19 +350,12 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                 else
                 {
                     cursor_recenter_frames_.store(0, std::memory_order_release);
+                    CursorHook::Instance().ClearForcedCursor();
                     ::ClipCursor(nullptr);
 
                     if (browser_)
                         browser_->OnGameFocusLost();
                 }
-
-                return std::nullopt;
-            }
-
-            if (msg == WM_ACTIVATEAPP)
-            {
-                if (!wParam)
-                    ::ClipCursor(nullptr);
 
                 return std::nullopt;
             }
@@ -356,6 +384,9 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                 browser_->SetKeyboardLayoutLocale(locale);
         }
     }
+
+    if (focus_)
+        focus_->SetGameActive(::GetForegroundWindow() == hwnd);
 
     RenderManager::Instance().SetGameWindow(hwnd);
     LOG_INFO("[Runtime] Initialization finalized.");
