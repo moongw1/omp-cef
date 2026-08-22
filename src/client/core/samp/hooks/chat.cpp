@@ -20,30 +20,37 @@ bool ChatHook::Initialize()
 
     void* addrOpenChat = nullptr;
     void* addrCloseChat = nullptr;
+    void* addrRenderChat = nullptr;
     void* addrDrawChat = nullptr;
+    void* addrRenderChatToSurface = nullptr;
 
     switch (addrs.Version())
     {
         case SampVersion::V037:
             addrOpenChat = reinterpret_cast<void*>(base + 0x657E0);
             addrCloseChat = reinterpret_cast<void*>(base + 0x658E0);
+            addrRenderChat = reinterpret_cast<void*>(base + 0x63D70);
             addrDrawChat = reinterpret_cast<void*>(base + 0x64230);
+            addrRenderChatToSurface = reinterpret_cast<void*>(base + 0x64300);
             break;
         case SampVersion::V037R3:
             addrOpenChat = reinterpret_cast<void*>(base + 0x68D10);
             addrCloseChat = reinterpret_cast<void*>(base + 0x68E10);
+            addrRenderChat = reinterpret_cast<void*>(base + 0x671C0);
             addrDrawChat = reinterpret_cast<void*>(base + 0x67680);
+            addrRenderChatToSurface = reinterpret_cast<void*>(base + 0x67750);
             break;
         case SampVersion::V037R5:
             addrOpenChat = reinterpret_cast<void*>(base + 0x69480);
             addrCloseChat = reinterpret_cast<void*>(base + 0x69580);
+            addrRenderChat = reinterpret_cast<void*>(base + 0x67940);
             addrDrawChat = reinterpret_cast<void*>(base + 0x67E00);
+            addrRenderChatToSurface = reinterpret_cast<void*>(base + 0x67ED0);
             break;
         case SampVersion::V03DLR1:
             addrOpenChat = reinterpret_cast<void*>(base + 0x68EC0);
             addrCloseChat = reinterpret_cast<void*>(base + 0x68FC0);
-            // Native chat Draw offset for 0.3.DL-R1 is intentionally not guessed.
-            // Keep chat input hooks working and skip visual suppression on this build.
+            // Native chat visual offsets for 0.3.DL-R1 are intentionally not guessed.
             break;
         default:
             break;
@@ -87,22 +94,25 @@ bool ChatHook::Initialize()
         return false;
     }
 
-    if (addrDrawChat)
-    {
-        if (!hooks_.Install("ChatHook::DrawChat", addrDrawChat, reinterpret_cast<void*>(&Hook_DrawChat)))
-        {
-            LOG_ERROR("[ChatHook] Failed to install native chat Draw hook; original chat may remain visible.");
-        }
-        else
-        {
-            s_orig_draw_ = reinterpret_cast<FnDrawChat>(hooks_.GetOriginal("ChatHook::DrawChat"));
-            LOG_INFO("[ChatHook] Native SA:MP chat rendering disabled.");
-        }
-    }
+    if (addrRenderChat && hooks_.Install("ChatHook::RenderChat", addrRenderChat, reinterpret_cast<void*>(&Hook_RenderChat)))
+        s_orig_render_ = reinterpret_cast<FnChatVisual>(hooks_.GetOriginal("ChatHook::RenderChat"));
+    else if (addrRenderChat)
+        LOG_ERROR("[ChatHook] Failed to install native chat Render hook.");
+
+    if (addrDrawChat && hooks_.Install("ChatHook::DrawChat", addrDrawChat, reinterpret_cast<void*>(&Hook_DrawChat)))
+        s_orig_draw_ = reinterpret_cast<FnChatVisual>(hooks_.GetOriginal("ChatHook::DrawChat"));
+    else if (addrDrawChat)
+        LOG_ERROR("[ChatHook] Failed to install native chat Draw hook.");
+
+    if (addrRenderChatToSurface && hooks_.Install("ChatHook::RenderChatToSurface", addrRenderChatToSurface, reinterpret_cast<void*>(&Hook_RenderChatToSurface)))
+        s_orig_render_surface_ = reinterpret_cast<FnChatVisual>(hooks_.GetOriginal("ChatHook::RenderChatToSurface"));
+    else if (addrRenderChatToSurface)
+        LOG_ERROR("[ChatHook] Failed to install native chat RenderToSurface hook.");
+
+    if (addrRenderChat || addrDrawChat || addrRenderChatToSurface)
+        LOG_INFO("[ChatHook] Native SA:MP chat visuals fully suppressed (Render/Draw/RenderToSurface).");
     else
-    {
-        LOG_WARN("[ChatHook] Native chat render suppression is unavailable for this SA:MP version.");
-    }
+        LOG_WARN("[ChatHook] Native chat visual suppression is unavailable for this SA:MP version.");
 
     LOG_DEBUG("[ChatHook] OpenChatInput hook installed.");
     LOG_DEBUG("[ChatHook] CloseChatInput hook installed.");
@@ -111,10 +121,14 @@ bool ChatHook::Initialize()
 
 void ChatHook::Shutdown()
 {
+    hooks_.Uninstall("ChatHook::RenderChatToSurface");
     hooks_.Uninstall("ChatHook::DrawChat");
+    hooks_.Uninstall("ChatHook::RenderChat");
     hooks_.Uninstall("ChatHook::OpenChatInput");
     hooks_.Uninstall("ChatHook::CloseChatInput");
+    s_orig_render_surface_ = nullptr;
     s_orig_draw_ = nullptr;
+    s_orig_render_ = nullptr;
     s_orig_open_ = nullptr;
     s_orig_close_ = nullptr;
     s_self_ = nullptr;
@@ -122,13 +136,11 @@ void ChatHook::Shutdown()
 
 void ChatHook::SetChatInputState(bool open)
 {
-    // Avoid redundant notifications
     if (focus_.IsChatInputOpen() == open)
         return;
 
     focus_.SetChatInputOpen(open);
 
-    // Local JS event to all browsers
     for (const auto& kv : browser_.GetAllBrowsers())
     {
         const int id = kv.first;
@@ -143,7 +155,6 @@ void ChatHook::SetChatInputState(bool open)
         inst->browser->GetMainFrame()->SendProcessMessage(PID_RENDERER, msg);
     }
 
-    // Server callback
     ClientEmitEventPacket ev;
     ev.browserId = -1;
     ev.name = CefEvent::Client::ChatInputState;
@@ -178,8 +189,17 @@ void __fastcall ChatHook::Hook_CloseChatInput(void* pThis, void* _edx)
     self->SetChatInputState(false);
 }
 
+void __fastcall ChatHook::Hook_RenderChat(void* /*pThis*/, void* /*_edx*/)
+{
+    // Suppress the native chat dialog/UI, including its scrollbar.
+}
+
 void __fastcall ChatHook::Hook_DrawChat(void* /*pThis*/, void* /*_edx*/)
 {
-    // Intentionally do nothing.
-    // Messages continue to be stored by SA:MP, but its native chat UI is never drawn.
+    // Suppress native chat text/background drawing.
+}
+
+void __fastcall ChatHook::Hook_RenderChatToSurface(void* /*pThis*/, void* /*_edx*/)
+{
+    // Suppress the native chat surface path as well.
 }
