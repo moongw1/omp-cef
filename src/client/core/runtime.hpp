@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 
 class App;
@@ -79,6 +80,7 @@ private:
 	std::unique_ptr<ScoreboardHook> scoreboard_hook_;
 
 	std::unique_ptr<App> app_;
-	
+
+	std::atomic<bool> stop_started_{ false };
 	std::atomic<int> cursor_recenter_frames_{ 0 };
 };

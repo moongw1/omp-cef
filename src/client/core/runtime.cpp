@@ -363,6 +363,12 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
 void Runtime::Stop()
 {
+	// DllMain releases the owning unique_ptr, which invokes the destructor and
+	// can otherwise enter this teardown path more than once.  Partial startup
+	// failures may also leave some subsystems uninitialized.
+	if (stop_started_.exchange(true, std::memory_order_acq_rel))
+		return;
+
 	if (app_)
 		app_->Shutdown();
 
@@ -399,7 +405,9 @@ void Runtime::Stop()
 		wndproc_.reset();
 	}
 
-	CursorHook::Instance().Shutdown(*hooks_);
+	if (hooks_)
+		CursorHook::Instance().Shutdown(*hooks_);
+
 	RenderManager::Instance().Shutdown();
 
 	if (hooks_)

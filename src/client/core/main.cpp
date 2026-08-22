@@ -27,10 +27,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     }
     else if (reason == DLL_PROCESS_DETACH) {
         if (runtime) {
-            runtime->Stop();
+            // Runtime's destructor owns the shutdown. Calling Stop() here as
+            // well would execute the teardown twice.
             runtime.reset();
         }
-        
     }
 
     return TRUE;
