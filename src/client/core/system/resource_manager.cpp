@@ -185,8 +185,6 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 	{
 		assembly.totalChunks = packet.totalChunks;
 		assembly.chunks.resize(packet.totalChunks);
-
-		//LOG_INFO("[Download] Starting assembly for '{}' ({} chunks)", packet.relativePath, packet.totalChunks);
 	}
 
 	if (packet.totalChunks != assembly.totalChunks)
@@ -322,6 +320,7 @@ bool ResourceManager::LoadPakIntoVFS(const std::string& resourceName, const std:
 	LOG_DEBUG("[ResourceManager] Loading PAK with {} files", num_files);
 
 	VirtualFileSystem vfs;
+	vfs.reserve(num_files);
 
 	for (mz_uint i = 0; i < num_files; ++i)
 	{
@@ -348,7 +347,8 @@ bool ResourceManager::LoadPakIntoVFS(const std::string& resourceName, const std:
 		}
 
 		const auto decoded_size = decoded.size();
-		vfs[file_stat.m_filename] = std::move(decoded);
+		vfs.emplace(file_stat.m_filename,
+			std::make_shared<const std::vector<uint8_t>>(std::move(decoded)));
 		LOG_DEBUG("[ResourceManager] Loaded file: {} ({} bytes)", file_stat.m_filename, decoded_size);
 	}
 
@@ -363,9 +363,8 @@ bool ResourceManager::LoadPakIntoVFS(const std::string& resourceName, const std:
 	return true;
 }
 
-bool ResourceManager::GetFileContent(const std::string& resourceName,
-	const std::string& internalPath,
-	std::vector<uint8_t>& outContent)
+ResourceBuffer ResourceManager::GetFileContentShared(const std::string& resourceName,
+	const std::string& internalPath)
 {
 	std::lock_guard<std::mutex> lock(vfs_mutex_);
 
@@ -373,7 +372,7 @@ bool ResourceManager::GetFileContent(const std::string& resourceName,
 	if (it == loaded_resources_vfs_.end())
 	{
 		LOG_WARN("[ResourceManager] Resource '{}' not found in VFS", resourceName);
-		return false;
+		return {};
 	}
 
 	auto& vfs = it->second;
@@ -381,9 +380,20 @@ bool ResourceManager::GetFileContent(const std::string& resourceName,
 	if (file_it == vfs.end())
 	{
 		LOG_WARN("[ResourceManager] File '{}' not found in resource '{}'", internalPath, resourceName);
-		return false;
+		return {};
 	}
 
-	outContent = file_it->second;
+	return file_it->second;
+}
+
+bool ResourceManager::GetFileContent(const std::string& resourceName,
+	const std::string& internalPath,
+	std::vector<uint8_t>& outContent)
+{
+	auto shared = GetFileContentShared(resourceName, internalPath);
+	if (!shared)
+		return false;
+
+	outContent.assign(shared->begin(), shared->end());
 	return true;
 }
