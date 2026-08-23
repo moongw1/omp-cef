@@ -4,6 +4,7 @@
 #include "include/cef_scheme.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,10 @@ public:
 private:
     ResourceManager& resource_manager_;
 
+    // Internal pages use owned data_. Server assets use shared_data_ so large
+    // CSS/JS/font/image files are not copied for every browser request.
     std::vector<uint8_t> data_;
+    std::shared_ptr<const std::vector<uint8_t>> shared_data_;
     std::string mime_type_;
     size_t read_offset_ = 0;
 
