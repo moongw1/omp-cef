@@ -13,6 +13,8 @@ if("${CEF_ASI_DEPLOY_DIR}" STREQUAL "" AND NOT "${CEF_GAME_DIR}" STREQUAL "")
     set(CEF_ASI_DEPLOY_DIR "${CEF_GAME_DIR}")
 endif()
 
+find_package(minhook CONFIG REQUIRED)
+
 add_library(${PROJECT_NAME} SHARED main.cpp)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -34,6 +36,9 @@ target_compile_definitions(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         shlwapi
+        user32
+        d3d9
+        minhook::minhook
 )
 
 if(NOT DEFINED ENV{CI} AND CEF_ASI_DEPLOY_DIR)
