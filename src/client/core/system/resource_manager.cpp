@@ -12,6 +12,31 @@
 #include "shared/utils.hpp"
 #include "ui/download_dialog.hpp"
 
+namespace
+{
+    std::string VerifiedHashPath(const std::string& pakPath)
+    {
+        return pakPath + ".verified-hash";
+    }
+
+    bool ReadVerifiedHash(const std::string& pakPath, std::string& hash)
+    {
+        std::ifstream in(VerifiedHashPath(pakPath), std::ios::binary);
+        if (!in)
+            return false;
+
+        std::getline(in, hash);
+        return !hash.empty();
+    }
+
+    void WriteVerifiedHash(const std::string& pakPath, const std::string& hash)
+    {
+        std::ofstream out(VerifiedHashPath(pakPath), std::ios::binary | std::ios::trunc);
+        if (out)
+            out << hash;
+    }
+}
+
 ResourceManager::ResourceManager(Gta& gta) : gta_(gta) {}
 
 void ResourceManager::SetNetworkManager(NetworkManager& net)
@@ -77,17 +102,22 @@ void ResourceManager::OnManifestReceived(const std::string& manifestJson)
 void ResourceManager::MarkAsReadyToDownload()
 {
 	DownloadState expected = DownloadState::IDLE;
-	if (state_.compare_exchange_strong(expected, DownloadState::AWAITING_TRIGGER)) {
-		LOG_INFO("[ResourceManager] Ready to download.");
-	}
+	if (!state_.compare_exchange_strong(expected, DownloadState::AWAITING_TRIGGER))
+		return;
+
+	LOG_INFO("[ResourceManager] Ready to download; starting immediately (no spawn wait).");
+
+	// ServerConfig is dispatched on the CEF networking thread. Starting here
+	// avoids the old dependency on SA:MP CNetGame::ProcessGameStuff/spawn while
+	// also keeping disk hashing/decryption off GTA's render thread.
+	TriggerDownload();
 }
 
 void ResourceManager::TriggerDownload()
 {
 	DownloadState expected = DownloadState::AWAITING_TRIGGER;
-	if (!state_.compare_exchange_strong(expected, DownloadState::VERIFYING_CACHE)) {
+	if (!state_.compare_exchange_strong(expected, DownloadState::VERIFYING_CACHE))
 		return;
-	}
 
 	if (!net_) {
 		state_ = DownloadState::AWAITING_TRIGGER;
@@ -120,14 +150,28 @@ void ResourceManager::TriggerDownload()
 
             bool file_exists = std::filesystem::exists(local_path);
             if (file_exists) {
-                size_t actual_size = std::filesystem::file_size(local_path);
+                const size_t actual_size = std::filesystem::file_size(local_path);
                 if (actual_size == server_size) {
-                    std::string local_hash = CalculateSHA256(local_path);
-                    if (local_hash == server_hash) {
-                        if (LoadPakIntoVFS(resourceName, local_path)) {
-                            continue;
+                    bool verified = false;
+                    std::string cached_hash;
+
+                    if (ReadVerifiedHash(local_path, cached_hash) && cached_hash == server_hash)
+                    {
+                        verified = true;
+                        LOG_DEBUG("[ResourceManager] Fast verified-cache hit: {}", path);
+                    }
+                    else
+                    {
+                        const std::string local_hash = CalculateSHA256(local_path);
+                        if (local_hash == server_hash)
+                        {
+                            verified = true;
+                            WriteVerifiedHash(local_path, server_hash);
                         }
                     }
+
+                    if (verified && LoadPakIntoVFS(resourceName, local_path))
+                        continue;
                 }
             }
 
@@ -174,11 +218,9 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 	}
 
 	last_packet_time_ = std::chrono::steady_clock::now();
-
 	std::lock_guard<std::mutex> lock(download_mutex_);
 
 	std::string fileKey = packet.resourceName + "/" + packet.relativePath;
-
 	auto& assembly = assembling_files_[fileKey];
 
 	if (assembly.totalChunks == 0)
@@ -206,7 +248,6 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 
 		for (size_t i = 0; i < download_progress_.size(); ++i) {
 			if (download_progress_[i].fileHash == packet.fileHash) {
-				auto& progress = download_progress_[i];
 				download_progress_[i].bytesReceived += packet.data.size();
 				if (download_dialog_)
 					download_dialog_->Update(static_cast<uint32_t>(i), download_progress_[i].bytesReceived);
@@ -220,23 +261,18 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 
 		std::vector<uint8_t> completeFile;
 		size_t totalSize = 0;
-		for (const auto& chunk : assembly.chunks) {
+		for (const auto& chunk : assembly.chunks)
 			totalSize += chunk.size();
-		}
 
 		completeFile.reserve(totalSize);
-
-		for (const auto& chunk : assembly.chunks) {
+		for (const auto& chunk : assembly.chunks)
 			completeFile.insert(completeFile.end(), chunk.begin(), chunk.end());
-		}
 
 		std::string receivedHash = CalculateSHA256FromData(completeFile);
 		if (receivedHash != packet.fileHash)
 		{
 			LOG_ERROR("[ResourceManager] Hash mismatch for '{}': expected {}, got {}", packet.relativePath, packet.fileHash, receivedHash);
-
 			assembling_files_.erase(fileKey);
-
 			for (auto& progress : download_progress_)
 			{
 				if (progress.fileName == packet.relativePath) {
@@ -256,11 +292,10 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 			outFile.close();
 
 			LOG_INFO("[ResourceManager] File '{}' saved successfully ({} bytes)", packet.relativePath, completeFile.size());
+			WriteVerifiedHash(savePath, receivedHash);
 
 			if (LoadPakIntoVFS(packet.resourceName, savePath))
-			{
 				LOG_INFO("[ResourceManager] Loaded '{}' into VFS", packet.resourceName);
-			}
 
 			for (auto& progress : download_progress_)
 			{
@@ -274,7 +309,6 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 			assembling_files_.erase(fileKey);
 
 			bool allComplete = true;
-
 			for (const auto& progress : download_progress_)
 			{
 				if (!progress.isComplete) {
@@ -286,7 +320,6 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 			if (allComplete)
 			{
 				LOG_INFO("[ResourceManager] All downloads complete!");
-
 				state_ = DownloadState::COMPLETED;
 				if (download_dialog_)
 					download_dialog_->Finish();
