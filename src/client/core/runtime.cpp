@@ -130,7 +130,6 @@ bool Runtime::Start()
     });
     
     RenderManager::Instance().SetHookManager(hooks_.get());
-    //RenderManager::Instance().SetGameWindow(gta_->GetHwnd());
     
     if (!RenderManager::Instance().Initialize()) {
         LOG_FATAL("RenderManager init failed.");
@@ -186,13 +185,11 @@ bool Runtime::Start()
             app_->Tick();
     };
 
-	// SA:MP version
 	samp_version_ = std::make_unique<SampVersionManager>();
 	samp_version_->Initialize();
 
 	SampAddresses::Instance().Initialize(*samp_version_);
 
-	// SA:MP hooks
 	samp_ = std::make_unique<Samp>(*hooks_);
 	samp_->OnLoaded = [this]()
 	{
@@ -265,7 +262,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
         return;
     }
 
-    // WndProc
     if (!wndproc_)
     {
         wndproc_ = std::make_unique<WndProcHook>(hwnd);
@@ -279,8 +275,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         wndproc_->OnMessage = [this](HWND h, UINT msg, WPARAM wParam, LPARAM lParam) -> std::optional<LRESULT>
         {
-            // Activation state must be handled before CEF input dispatch so the
-            // cursor hook is released as soon as Windows switches to another app.
             if (msg == WM_ACTIVATEAPP)
             {
                 const bool active = (wParam != FALSE);
@@ -297,21 +291,33 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                     if (browser_)
                         browser_->OnGameFocusLost();
 
-                    // GTA SA/D3D9 can remain as a black fullscreen surface after
-                    // Alt+Tab instead of yielding the desktop. Explicitly minimize
-                    // the game window when the process loses activation so Windows
-                    // can show the newly focused application immediately.
-                    if (::IsWindow(h) && !::IsIconic(h))
-                        ::ShowWindow(h, SW_MINIMIZE);
+                    // Do not minimize synchronously from inside WM_ACTIVATEAPP.
+                    // GTA/D3D9 may immediately overwrite that state while handling
+                    // the same activation transition, leaving its black exclusive
+                    // fullscreen surface above the desktop. First drop any top-most
+                    // status, then queue a normal system minimize so it runs after
+                    // the current activation message has completely unwound.
+                    if (::IsWindow(h))
+                    {
+                        ::SetWindowPos(
+                            h,
+                            HWND_NOTOPMOST,
+                            0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+
+                        if (!::IsIconic(h))
+                            ::PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                    }
                 }
                 else
                 {
-                    // If Windows activates the app while it is still iconic,
-                    // restore it before resynchronizing CEF/cursor state.
                     if (::IsWindow(h) && ::IsIconic(h))
-                        ::ShowWindow(h, SW_RESTORE);
+                        ::ShowWindowAsync(h, SW_RESTORE);
 
                     CursorHook::Instance().OnGameActivated();
+
+                    if (focus_)
+                        focus_->RequestResync();
 
                     if (browser_)
                         browser_->OnGameFocusGained();
@@ -334,7 +340,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                 if (browser_ && !locale.empty())
                     browser_->SetKeyboardLayoutLocale(locale);
 
-                // Let the original window procedure propagate the message.
                 return std::nullopt;
             }
 
@@ -388,7 +393,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         LOG_INFO("[Runtime] WndProc hook installed successfully.");
 
-        // Publish the layout that was already active before the hook was installed.
         if (browser_)
         {
             const std::string locale = GetKeyboardLocaleName(::GetKeyboardLayout(0));
@@ -406,9 +410,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
 void Runtime::Stop()
 {
-	// DllMain releases the owning unique_ptr, which invokes the destructor and
-	// can otherwise enter this teardown path more than once.  Partial startup
-	// failures may also leave some subsystems uninitialized.
 	if (stop_started_.exchange(true, std::memory_order_acq_rel))
 		return;
 
