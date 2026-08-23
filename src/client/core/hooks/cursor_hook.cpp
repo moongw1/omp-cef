@@ -31,37 +31,40 @@ void CursorHook::Initialize(HookManager& hooks)
         return;
     }
 
-    orig_set_cursor_ = reinterpret_cast<SetCursor_t>(
-        hooks.GetOriginal(kHookNameSetCursor));
+    orig_set_cursor_.store(
+        reinterpret_cast<SetCursor_t>(hooks.GetOriginal(kHookNameSetCursor)),
+        std::memory_order_release);
 
     LOG_INFO("[CursorHook] SetCursor hook installed.");
 }
 
 void CursorHook::Shutdown(HookManager& hooks)
 {
+    ClearForcedCursor();
     hooks.Uninstall(kHookNameSetCursor);
-    orig_set_cursor_ = nullptr;
+    orig_set_cursor_.store(nullptr, std::memory_order_release);
 }
 
 HCURSOR WINAPI CursorHook::hkSetCursor(HCURSOR hCursor)
 {
     auto& self = CursorHook::Instance();
+    const auto original = self.orig_set_cursor_.load(std::memory_order_acquire);
 
-    if (!self.orig_set_cursor_)
+    if (!original)
         return nullptr;
 
     const DWORD now = ::GetTickCount();
     const DWORD lastActivate = self.last_activate_tick_.load(std::memory_order_acquire);
 
     if ((now - lastActivate) < kActivateGraceMs)
-        return self.orig_set_cursor_(hCursor);
+        return original(hCursor);
 
     if (self.forced_.load(std::memory_order_acquire))
     {
         HCURSOR forced = self.forced_cursor_.load(std::memory_order_acquire);
         if (forced)
-            return self.orig_set_cursor_(forced);
+            return original(forced);
     }
 
-    return self.orig_set_cursor_(hCursor);
+    return original(hCursor);
 }

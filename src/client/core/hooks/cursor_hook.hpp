@@ -48,7 +48,7 @@ private:
 
     using SetCursor_t = HCURSOR(WINAPI*)(HCURSOR);
 
-    SetCursor_t          orig_set_cursor_    = nullptr;
+    std::atomic<SetCursor_t> orig_set_cursor_{ nullptr };
     std::atomic<bool>    forced_             { false };
     std::atomic<HCURSOR> forced_cursor_      { nullptr };
     std::atomic<DWORD>   last_activate_tick_ { 0 };

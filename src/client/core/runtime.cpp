@@ -130,7 +130,6 @@ bool Runtime::Start()
     });
     
     RenderManager::Instance().SetHookManager(hooks_.get());
-    //RenderManager::Instance().SetGameWindow(gta_->GetHwnd());
     
     if (!RenderManager::Instance().Initialize()) {
         LOG_FATAL("RenderManager init failed.");
@@ -186,13 +185,11 @@ bool Runtime::Start()
             app_->Tick();
     };
 
-	// SA:MP version
 	samp_version_ = std::make_unique<SampVersionManager>();
 	samp_version_->Initialize();
 
 	SampAddresses::Instance().Initialize(*samp_version_);
 
-	// SA:MP hooks
 	samp_ = std::make_unique<Samp>(*hooks_);
 	samp_->OnLoaded = [this]()
 	{
@@ -265,7 +262,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
         return;
     }
 
-    // WndProc
     if (!wndproc_)
     {
         wndproc_ = std::make_unique<WndProcHook>(hwnd);
@@ -279,6 +275,60 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         wndproc_->OnMessage = [this](HWND h, UINT msg, WPARAM wParam, LPARAM lParam) -> std::optional<LRESULT>
         {
+            if (msg == WM_ACTIVATEAPP)
+            {
+                const bool active = (wParam != FALSE);
+
+                if (focus_)
+                    focus_->SetGameActive(active);
+
+                if (!active)
+                {
+                    cursor_recenter_frames_.store(0, std::memory_order_release);
+                    CursorHook::Instance().ClearForcedCursor();
+                    ::ClipCursor(nullptr);
+
+                    if (browser_)
+                        browser_->OnGameFocusLost();
+
+                    // Do not minimize synchronously from inside WM_ACTIVATEAPP.
+                    // GTA/D3D9 may immediately overwrite that state while handling
+                    // the same activation transition, leaving its black exclusive
+                    // fullscreen surface above the desktop. First drop any top-most
+                    // status, then queue a normal system minimize so it runs after
+                    // the current activation message has completely unwound.
+                    if (::IsWindow(h))
+                    {
+                        ::SetWindowPos(
+                            h,
+                            HWND_NOTOPMOST,
+                            0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+
+                        if (!::IsIconic(h))
+                            ::PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                    }
+                }
+                else
+                {
+                    if (::IsWindow(h) && ::IsIconic(h))
+                        ::ShowWindowAsync(h, SW_RESTORE);
+
+                    CursorHook::Instance().OnGameActivated();
+
+                    if (focus_)
+                        focus_->RequestResync();
+
+                    if (browser_)
+                        browser_->OnGameFocusGained();
+
+                    cursor_recenter_frames_.store(5, std::memory_order_release);
+                }
+
+                UpdateBrowserDrawState();
+                return std::nullopt;
+            }
+
             if (browser_ && browser_->OnWndProcMessage(h, msg, wParam, lParam))
                 return { TRUE };
 
@@ -290,13 +340,15 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                 if (browser_ && !locale.empty())
                     browser_->SetKeyboardLayoutLocale(locale);
 
-                // Let the original window procedure propagate the message.
                 return std::nullopt;
             }
 
             if (msg == WM_ACTIVATE)
             {
                 const bool active = (LOWORD(wParam) != WA_INACTIVE);
+
+                if (focus_)
+                    focus_->SetGameActive(active);
 
                 UpdateBrowserDrawState();
 
@@ -315,19 +367,12 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                 else
                 {
                     cursor_recenter_frames_.store(0, std::memory_order_release);
+                    CursorHook::Instance().ClearForcedCursor();
                     ::ClipCursor(nullptr);
 
                     if (browser_)
                         browser_->OnGameFocusLost();
                 }
-
-                return std::nullopt;
-            }
-
-            if (msg == WM_ACTIVATEAPP)
-            {
-                if (!wParam)
-                    ::ClipCursor(nullptr);
 
                 return std::nullopt;
             }
@@ -348,7 +393,6 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         LOG_INFO("[Runtime] WndProc hook installed successfully.");
 
-        // Publish the layout that was already active before the hook was installed.
         if (browser_)
         {
             const std::string locale = GetKeyboardLocaleName(::GetKeyboardLayout(0));
@@ -357,12 +401,18 @@ void Runtime::FinalizeInitialization(HWND hwnd)
         }
     }
 
+    if (focus_)
+        focus_->SetGameActive(::GetForegroundWindow() == hwnd);
+
     RenderManager::Instance().SetGameWindow(hwnd);
     LOG_INFO("[Runtime] Initialization finalized.");
 }
 
 void Runtime::Stop()
 {
+	if (stop_started_.exchange(true, std::memory_order_acq_rel))
+		return;
+
 	if (app_)
 		app_->Shutdown();
 
@@ -399,7 +449,9 @@ void Runtime::Stop()
 		wndproc_.reset();
 	}
 
-	CursorHook::Instance().Shutdown(*hooks_);
+	if (hooks_)
+		CursorHook::Instance().Shutdown(*hooks_);
+
 	RenderManager::Instance().Shutdown();
 
 	if (hooks_)
