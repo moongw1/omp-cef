@@ -1,6 +1,7 @@
 #include "chat.hpp"
 
 #include <cstdint>
+#include <cstring>
 
 #include "browser/focus.hpp"
 #include "browser/manager.hpp"
@@ -10,6 +11,52 @@
 #include "system/logger.hpp"
 #include "shared/events.hpp"
 #include "utf8.hpp"
+
+namespace
+{
+    // CChat is packed in the supported 32-bit SA:MP builds. In R1/R3/R5 the
+    // m_pScrollbar pointer lives at offset 0x11E.
+    constexpr std::size_t kChatScrollbarOffset = 0x11E;
+
+    bool IsWritableAddress(const void* address, std::size_t size)
+    {
+        if (!address || size == 0)
+            return false;
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (::VirtualQuery(address, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+            return false;
+
+        const DWORD protection = mbi.Protect & 0xFF;
+        if (protection == PAGE_NOACCESS || protection == PAGE_GUARD || protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ || protection == PAGE_READONLY)
+            return false;
+
+        const auto start = reinterpret_cast<std::uintptr_t>(address);
+        const auto end = start + size;
+        const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        return end <= regionEnd;
+    }
+
+    void HideNativeChatScrollbar(void* chat)
+    {
+        if (!chat || sizeof(void*) != 4)
+            return;
+
+        void* scrollbar = nullptr;
+        const auto* scrollbarSlot = static_cast<const std::uint8_t*>(chat) + kChatScrollbarOffset;
+
+        // CChat is packed, so use memcpy instead of an unaligned pointer load.
+        std::memcpy(&scrollbar, scrollbarSlot, sizeof(scrollbar));
+        if (!scrollbar)
+            return;
+
+        // Legacy DXUT's CDXUTControl has a vtable pointer first and m_bVisible
+        // immediately after it. CDXUTScrollBar derives directly from it.
+        auto* visible = static_cast<std::uint8_t*>(scrollbar) + sizeof(void*);
+        if (IsWritableAddress(visible, sizeof(bool)))
+            *reinterpret_cast<bool*>(visible) = false;
+    }
+}
 
 bool ChatHook::Initialize()
 {
@@ -110,7 +157,7 @@ bool ChatHook::Initialize()
         LOG_ERROR("[ChatHook] Failed to install native chat RenderToSurface hook.");
 
     if (addrRenderChat || addrDrawChat || addrRenderChatToSurface)
-        LOG_INFO("[ChatHook] Native SA:MP chat visuals fully suppressed (Render/Draw/RenderToSurface).");
+        LOG_INFO("[ChatHook] Native SA:MP chat visuals suppressed and scrollbar control forced hidden.");
     else
         LOG_WARN("[ChatHook] Native chat visual suppression is unavailable for this SA:MP version.");
 
@@ -174,6 +221,7 @@ void __fastcall ChatHook::Hook_OpenChatInput(void* pThis, void* _edx)
     if (s_orig_open_)
         s_orig_open_(pThis, _edx);
 
+    HideNativeChatScrollbar(pThis);
     self->SetChatInputState(true);
 }
 
@@ -186,20 +234,24 @@ void __fastcall ChatHook::Hook_CloseChatInput(void* pThis, void* _edx)
     if (s_orig_close_)
         s_orig_close_(pThis, _edx);
 
+    HideNativeChatScrollbar(pThis);
     self->SetChatInputState(false);
 }
 
-void __fastcall ChatHook::Hook_RenderChat(void* /*pThis*/, void* /*_edx*/)
+void __fastcall ChatHook::Hook_RenderChat(void* pThis, void* /*_edx*/)
 {
-    // Suppress the native chat dialog/UI, including its scrollbar.
+    HideNativeChatScrollbar(pThis);
+    // Native CChat drawing is intentionally suppressed.
 }
 
-void __fastcall ChatHook::Hook_DrawChat(void* /*pThis*/, void* /*_edx*/)
+void __fastcall ChatHook::Hook_DrawChat(void* pThis, void* /*_edx*/)
 {
-    // Suppress native chat text/background drawing.
+    HideNativeChatScrollbar(pThis);
+    // Native chat text/background drawing is intentionally suppressed.
 }
 
-void __fastcall ChatHook::Hook_RenderChatToSurface(void* /*pThis*/, void* /*_edx*/)
+void __fastcall ChatHook::Hook_RenderChatToSurface(void* pThis, void* /*_edx*/)
 {
-    // Suppress the native chat surface path as well.
+    HideNativeChatScrollbar(pThis);
+    // Native chat surface rendering is intentionally suppressed.
 }
