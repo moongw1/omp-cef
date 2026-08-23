@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,8 +47,6 @@ public:
 
 	void Initialize();
 
-	// Controls the internal CEF loader UI shown during resource downloads.
-	// When false, downloads occur silently without opening the internal loader browser.
 	void SetResourcesLoaderUiEnabled(bool enabled);
 	bool IsResourcesLoaderUiEnabled() const { return resources_loader_ui_enabled_; }
 
@@ -108,8 +107,8 @@ private:
 	std::atomic<DownloadState> state_{ DownloadState::IDLE };
 	nlohmann::json server_manifest_;
 
-	std::map<std::string, VirtualFileSystem> loaded_resources_vfs_;
-	std::mutex vfs_mutex_;
+	std::unordered_map<std::string, VirtualFileSystem> loaded_resources_vfs_;
+	mutable std::shared_mutex vfs_mutex_;
 
 	std::mutex download_mutex_;
 	std::vector<FileProgressData> download_progress_;
