@@ -52,6 +52,33 @@ namespace
 
         return utf8_locale;
     }
+
+    void PrepareGameWindowForBackground(HWND hwnd)
+    {
+        if (!hwnd || !::IsWindow(hwnd))
+            return;
+
+        ::ClipCursor(nullptr);
+
+        // Always make sure the GTA window is no longer top-most before Windows
+        // switches to another application. This prevents a stale D3D9 black
+        // fullscreen surface from staying above Discord/the desktop.
+        ::SetWindowPos(
+            hwnd,
+            HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
+
+        if (!::IsIconic(hwnd))
+        {
+            // Use both mechanisms. ShowWindowAsync executes outside the current
+            // WndProc stack while SC_MINIMIZE lets GTA/Windows run the normal
+            // minimize path after the activation transition unwinds.
+            ::ShowWindowAsync(hwnd, SW_MINIMIZE);
+            ::PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        }
+    }
 }
 
 std::unique_ptr<Runtime> Runtime::CreateDefault()
@@ -275,6 +302,26 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
         wndproc_->OnMessage = [this](HWND h, UINT msg, WPARAM wParam, LPARAM lParam) -> std::optional<LRESULT>
         {
+            // Pre-empt Alt+Tab before Direct3D receives the focus-loss transition.
+            // This is the most reliable point for exclusive-fullscreen GTA SA.
+            if (msg == WM_SYSKEYDOWN && wParam == VK_TAB && (::GetKeyState(VK_MENU) & 0x8000))
+            {
+                cursor_recenter_frames_.store(0, std::memory_order_release);
+                CursorHook::Instance().ClearForcedCursor();
+                PrepareGameWindowForBackground(h);
+                // Do not consume Alt+Tab; Windows still needs to switch apps.
+                return std::nullopt;
+            }
+
+            // Win key / taskbar switching can skip the Alt+Tab message path.
+            if (msg == WM_KILLFOCUS)
+            {
+                cursor_recenter_frames_.store(0, std::memory_order_release);
+                CursorHook::Instance().ClearForcedCursor();
+                PrepareGameWindowForBackground(h);
+                return std::nullopt;
+            }
+
             if (msg == WM_ACTIVATEAPP)
             {
                 const bool active = (wParam != FALSE);
@@ -291,23 +338,7 @@ void Runtime::FinalizeInitialization(HWND hwnd)
                     if (browser_)
                         browser_->OnGameFocusLost();
 
-                    // Do not minimize synchronously from inside WM_ACTIVATEAPP.
-                    // GTA/D3D9 may immediately overwrite that state while handling
-                    // the same activation transition, leaving its black exclusive
-                    // fullscreen surface above the desktop. First drop any top-most
-                    // status, then queue a normal system minimize so it runs after
-                    // the current activation message has completely unwound.
-                    if (::IsWindow(h))
-                    {
-                        ::SetWindowPos(
-                            h,
-                            HWND_NOTOPMOST,
-                            0, 0, 0, 0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-
-                        if (!::IsIconic(h))
-                            ::PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-                    }
+                    PrepareGameWindowForBackground(h);
                 }
                 else
                 {
@@ -372,6 +403,8 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
                     if (browser_)
                         browser_->OnGameFocusLost();
+
+                    PrepareGameWindowForBackground(h);
                 }
 
                 return std::nullopt;
