@@ -56,6 +56,27 @@ namespace
         if (IsWritableAddress(visible, sizeof(bool)))
             *reinterpret_cast<bool*>(visible) = false;
     }
+
+    bool HasCefChatInputController(const BrowserManager& browserManager)
+    {
+        for (const auto& [id, holder] : browserManager.GetAllBrowsers())
+        {
+            (void)id;
+            if (!holder)
+                continue;
+
+            const auto& instance = *holder;
+            if (instance.closing)
+                continue;
+
+            // Only overlay browsers explicitly created with controls_chat=true
+            // are allowed to activate the SA:MP chat-input bridge.
+            if (instance.mode == RenderMode::Overlay2D && instance.controls_chat_input)
+                return true;
+        }
+
+        return false;
+    }
 }
 
 bool ChatHook::Initialize()
@@ -161,6 +182,7 @@ bool ChatHook::Initialize()
     else
         LOG_WARN("[ChatHook] Native chat visual suppression is unavailable for this SA:MP version.");
 
+    LOG_INFO("[ChatHook] Native T chat is blocked unless an overlay CEF browser has controls_chat=true.");
     LOG_DEBUG("[ChatHook] OpenChatInput hook installed.");
     LOG_DEBUG("[ChatHook] CloseChatInput hook installed.");
     return true;
@@ -218,6 +240,17 @@ void __fastcall ChatHook::Hook_OpenChatInput(void* pThis, void* _edx)
     if (self->focus_.ShouldBlockChat())
         return;
 
+    // Do not let SA:MP/open.mp open its native T chat on servers that did not
+    // create a CEF overlay explicitly allowed to control chat input.
+    if (!HasCefChatInputController(self->browser_))
+    {
+        self->SetChatInputState(false);
+        HideNativeChatScrollbar(pThis);
+        return;
+    }
+
+    // Keep the native input state only as an invisible keyboard lifecycle bridge
+    // for CEF chat (typing, Enter and Escape). Native rendering remains suppressed.
     if (s_orig_open_)
         s_orig_open_(pThis, _edx);
 
