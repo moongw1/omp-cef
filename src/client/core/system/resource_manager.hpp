@@ -5,8 +5,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "shared/packet.hpp"
@@ -15,8 +17,11 @@ class Gta;
 class NetworkManager;
 class DownloadDialog;
 
-// In-memory Virtual File System: maps an internal file path to its decrypted content
-using VirtualFileSystem = std::map<std::string, std::vector<uint8_t>>;
+// In-memory Virtual File System: maps an internal file path to immutable,
+// shared decrypted content. Resource handlers can serve these buffers without
+// copying the complete CSS/JS/font/image on every request.
+using ResourceBuffer = std::shared_ptr<const std::vector<uint8_t>>;
+using VirtualFileSystem = std::unordered_map<std::string, ResourceBuffer>;
 
 enum class DownloadState
 {
@@ -57,6 +62,11 @@ public:
 
 	void OnFileData(const FileDataPacket& packet);
 
+	// Zero-copy path used by the CEF scheme handler.
+	ResourceBuffer GetFileContentShared(const std::string& resourceName,
+		const std::string& internalPath);
+
+	// Compatibility helper for callers that still need an owned byte vector.
 	bool GetFileContent(const std::string& resourceName,
 		const std::string& internalPath,
 		std::vector<uint8_t>& outContent);
