@@ -14,7 +14,6 @@
 
 ResourceManager::ResourceManager(Gta& gta) : gta_(gta) {}
 
-
 void ResourceManager::SetNetworkManager(NetworkManager& net)
 {
 	net_ = &net;
@@ -122,12 +121,12 @@ void ResourceManager::TriggerDownload()
             bool file_exists = std::filesystem::exists(local_path);
             if (file_exists) {
                 size_t actual_size = std::filesystem::file_size(local_path);
-                std::string local_hash = CalculateSHA256(local_path);
-
-                if (local_hash == server_hash) {
-
-                    if (LoadPakIntoVFS(resourceName, local_path)) {
-                        continue;
+                if (actual_size == server_size) {
+                    std::string local_hash = CalculateSHA256(local_path);
+                    if (local_hash == server_hash) {
+                        if (LoadPakIntoVFS(resourceName, local_path)) {
+                            continue;
+                        }
                     }
                 }
             }
@@ -154,7 +153,8 @@ void ResourceManager::TriggerDownload()
 		}
 
 		LOG_DEBUG("[ResourceManager] Starting download for {} file(s):", download_progress_.size());
-		download_dialog_->Start(dialog_files);
+		if (download_dialog_)
+			download_dialog_->Start(dialog_files);
 
 		RequestFilesPacket request_packet;
 		request_packet.files = std::move(files_to_request);
@@ -208,12 +208,8 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 			if (download_progress_[i].fileHash == packet.fileHash) {
 				auto& progress = download_progress_[i];
 				download_progress_[i].bytesReceived += packet.data.size();
-
-				int percentage = (progress.totalSize > 0)
-					? static_cast<int>((static_cast<double>(progress.bytesReceived) / progress.totalSize) * 100.0)
-					: 100;
-				
-				download_dialog_->Update(static_cast<uint32_t>(i), download_progress_[i].bytesReceived);
+				if (download_dialog_)
+					download_dialog_->Update(static_cast<uint32_t>(i), download_progress_[i].bytesReceived);
 			}
 		}
 	}
@@ -292,7 +288,8 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 				LOG_INFO("[ResourceManager] All downloads complete!");
 
 				state_ = DownloadState::COMPLETED;
-				download_dialog_->Finish();
+				if (download_dialog_)
+					download_dialog_->Finish();
 			}
 		}
 		catch (const std::exception& e) {
@@ -355,7 +352,7 @@ bool ResourceManager::LoadPakIntoVFS(const std::string& resourceName, const std:
 	mz_zip_reader_end(&zip);
 
 	{
-		std::lock_guard<std::mutex> lock(vfs_mutex_);
+		std::unique_lock<std::shared_mutex> lock(vfs_mutex_);
 		loaded_resources_vfs_[resourceName] = std::move(vfs);
 	}
 
@@ -366,7 +363,7 @@ bool ResourceManager::LoadPakIntoVFS(const std::string& resourceName, const std:
 ResourceBuffer ResourceManager::GetFileContentShared(const std::string& resourceName,
 	const std::string& internalPath)
 {
-	std::lock_guard<std::mutex> lock(vfs_mutex_);
+	std::shared_lock<std::shared_mutex> lock(vfs_mutex_);
 
 	auto it = loaded_resources_vfs_.find(resourceName);
 	if (it == loaded_resources_vfs_.end())
@@ -375,7 +372,7 @@ ResourceBuffer ResourceManager::GetFileContentShared(const std::string& resource
 		return {};
 	}
 
-	auto& vfs = it->second;
+	const auto& vfs = it->second;
 	auto file_it = vfs.find(internalPath);
 	if (file_it == vfs.end())
 	{
